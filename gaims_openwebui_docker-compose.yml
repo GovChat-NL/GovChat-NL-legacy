@@ -1,0 +1,155 @@
+version: '3.8'
+
+services:
+  # -------------------------------------------
+  # PostgreSQL: relationele database voor Open WebUI
+  # -------------------------------------------
+  postgresowui:
+    image: postgres:16
+    container_name: postgresowui
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - /opt/docker/openwebui/postgres/pgdata:/var/lib/postgresql/data
+    networks:
+      - openwebui-net
+
+  # -------------------------------------------
+  # Qdrant: vector‐database voor RAG / embeddings
+  # -------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - /opt/docker/openwebui/qdrant/qdrant_storage:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6333
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__AUTHENTICATION_ENABLED=true
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+    networks:
+      - openwebui-net
+
+  # -------------------------------------------
+  # PgAdmin: beheerinterface voor PostgreSQL
+  # -------------------------------------------
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
+      - PGADMIN_CONFIG_SERVER_MODE='False'
+      - PGADMIN_LISTEN_PORT='80'
+    volumes:
+      - /opt/docker/openwebui/pgadmin/pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgresowui
+    networks:
+      - openwebui-net
+
+  # -------------------------------------------
+  # Apache Tika: voor document‐parsing (PDF, etc.)
+  # -------------------------------------------
+  tika:
+    image: apache/tika:latest-full
+    container_name: tika
+    restart: unless-stopped
+    ports:
+      - "9998:9998"
+
+    networks:
+      - openwebui-net
+
+  # -------------------------------------------
+  # Open WebUI: frontend + backend met Azure OAuth en RAG‐opties
+  # -------------------------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.8.10
+    container_name: open-webui
+    restart: unless-stopped
+    depends_on:
+      - postgresowui   # relationele DB
+      - qdrant         # vector DB
+    ports:
+      - "8020:8080"
+    volumes:
+      - /opt/docker/openwebui/openwebui/openwebui_data:/app/backend/data
+      - /opt/docker/openwebui/openwebui/govchat-static:/app/backend/static
+    environment:
+      # PostgreSQL-verbinding (gebruik de nieuwe servicenaam)
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgresowui:5432/${POSTGRES_DB}
+      # Qdrant-verbinding
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_URI=http://qdrant:6333
+      - VECTOR_DB=qdrant
+      # OAuth via Microsoft Entra ID
+      - ENABLE_SIGNUP=false
+      - ENABLE_LOGIN_FORM=false
+      - ENABLE_OAUTH_SIGNUP=true
+      - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
+      - AUTH_PROVIDER=azure
+      - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID}
+      - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET}
+      - MICROSOFT_CLIENT_TENANT_ID=${MICROSOFT_CLIENT_TENANT_ID}
+      - OAUTH_SCOPES=openid email profile groups
+      - ENABLE_OAUTH_GROUP_MANAGEMENT=true
+      - OAUTH_GROUP_CLAIM=groups
+      - ENABLE_OAUTH_GROUP_CREATION=true
+      - ENABLE_FORWARD_USER_INFO_HEADERS=true 
+      # WebUI‐secret voor sessies/tokens
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      # Azure OpenAI‐instellingen
+      - OPENAI_API_TYPE=azure
+      - OPENAI_API_BASE=${AZURE_OPENAI_API_BASE}
+      - OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - OPENAI_API_VERSION=2025-01-01-preview
+      - OPENAI_DEPLOYMENT_NAME=${OPENAI_DEPLOYMENT_NAME}
+      # Overige WebUI‐settings
+      - CORS_ALLOW_ORIGIN=https://gaims.meierijstad.nl
+      - MICROSOFT_REDIRECT_URI=https://gaims.meierijstad.nl/oauth/microsoft/callback
+      - WEBUI_URL=https://gaims.meierijstad.nl
+      - DEFAULT_LOCALE=nl-NL
+      - EMPTY_CHAT_WELCOME_MESSAGE=Welkom bij GAIMS
+      - LOGIN_SCREEN_SUBTITLE=Jouw AI buddy bij de gemeente Meierijstad
+      - GLOBAL_LOG_LEVEL=WARNING
+      - USER_AGENT=openwebui
+      - WEBUI_HOST=0.0.0.0
+      - STATIC_DIR=/app/backend/static
+      - WEBUI_NAME=GAIMS
+
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    networks:
+      - openwebui-net
+
+  govchat-admin:
+    image: ghcr.io/marjoleinverp/open-webui-govchat-overlay-admin:latest
+    container_name: govchat-admin
+    ports:
+      - "3002:3002"
+    environment:
+      - ADMIN_PASSWORD=${GOVCHAT_ADMIN_PASSWORD}
+    volumes:
+      - /opt/docker/openwebui/openwebui/govchat-static:/publish
+      - /opt/docker/openwebui/openwebui/govchat-admin-data:/data
+    depends_on:
+      - open-webui
+    restart: unless-stopped
+    networks:
+      - openwebui-net
+
+networks:
+  openwebui-net:
+    driver: bridge
