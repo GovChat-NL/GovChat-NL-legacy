@@ -1,0 +1,186 @@
+# =============================================================================
+# GovChat-NL — Basis Docker Compose
+# OpenWebUI + LiteLLM + Qdrant + PostgreSQL + Apache Tika
+#
+# Repository: https://github.com/govchat-nl/govchat-nl
+# Documentatie: https://govchat-nl.github.io
+# Licentie: EUPL v1.2
+#
+# Gebruik:
+#   cp .env.example .env
+#   docker compose -f govchat_docker-compose.yaml up -d
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — relationele database voor OpenWebUI (gebruikers, chats, config)
+  # ---------------------------------------------------------------------------
+  govchat-postgres:
+    image: postgres:16
+    container_name: govchat-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${OWUI_POSTGRES_DB}
+      - POSTGRES_USER=${OWUI_POSTGRES_USER}
+      - POSTGRES_PASSWORD=${OWUI_POSTGRES_PASSWORD}
+    volumes:
+      - govchat_postgres_data:/var/lib/postgresql/data
+    networks:
+      - govchat-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${OWUI_POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Qdrant — vector database voor RAG en kennisbank
+  # ---------------------------------------------------------------------------
+  govchat-qdrant:
+    image: qdrant/qdrant:latest
+    container_name: govchat-qdrant
+    restart: unless-stopped
+    environment:
+      - QDRANT__SERVICE__AUTHENTICATION_ENABLED=true
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+    volumes:
+      - govchat_qdrant_data:/qdrant/storage
+    networks:
+      - govchat-net
+
+  # ---------------------------------------------------------------------------
+  # Apache Tika — documentverwerking (PDF, Word, etc.) voor RAG-ingest
+  # ---------------------------------------------------------------------------
+  govchat-tika:
+    image: apache/tika:latest-full
+    container_name: govchat-tika
+    restart: unless-stopped
+    networks:
+      - govchat-net
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — database voor LiteLLM (modellen, sleutels, logs)
+  # ---------------------------------------------------------------------------
+  govchat-litellm-postgres:
+    image: postgres:16-alpine
+    container_name: govchat-litellm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${LITELLM_POSTGRES_PASSWORD}
+    volumes:
+      - govchat_litellm_postgres_data:/var/lib/postgresql/data
+    networks:
+      - govchat-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # LiteLLM — modelrouter en proxy voor alle LLM-providers
+  # Modellen worden beheerd via de LiteLLM-UI, geen config.yaml nodig.
+  # ---------------------------------------------------------------------------
+  govchat-litellm:
+    image: docker.litellm.ai/berriai/litellm-database:main-stable
+    container_name: govchat-litellm
+    restart: unless-stopped
+    depends_on:
+      govchat-litellm-postgres:
+        condition: service_healthy
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    environment:
+      DATABASE_URL: postgresql://litellm:${LITELLM_POSTGRES_PASSWORD}@govchat-litellm-postgres:5432/litellm
+      DATABASE_CONNECTION_POOL_LIMIT: ${LITELLM_DB_POOL_LIMIT:-10}
+      DATABASE_CONNECTION_TIMEOUT: ${LITELLM_DB_TIMEOUT:-30}
+      STORE_MODEL_IN_DB: "True"
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
+      UI_USERNAME: ${LITELLM_UI_USERNAME}
+      UI_PASSWORD: ${LITELLM_UI_PASSWORD}
+      LITELLM_LOG: ${LITELLM_LOG_LEVEL:-WARNING}
+    command:
+      - "--port"
+      - "4000"
+      - "--num_workers"
+      - "${LITELLM_NUM_WORKERS:-1}"
+      - "--drop_params"
+    networks:
+      - govchat-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ---------------------------------------------------------------------------
+  # OpenWebUI — gebruikersinterface en backend
+  # ---------------------------------------------------------------------------
+  govchat-openwebui:
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: govchat-openwebui
+    restart: unless-stopped
+    depends_on:
+      govchat-postgres:
+        condition: service_healthy
+      govchat-litellm:
+        condition: service_healthy
+    ports:
+      - "${OPENWEBUI_PORT:-8080}:8080"
+    volumes:
+      - govchat_openwebui_data:/app/backend/data
+    environment:
+      # Database
+      - DATABASE_URL=postgresql://${OWUI_POSTGRES_USER}:${OWUI_POSTGRES_PASSWORD}@govchat-postgres:5432/${OWUI_POSTGRES_DB}
+      # Qdrant
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_URI=http://govchat-qdrant:6333
+      - VECTOR_DB=qdrant
+      # Tika
+      - TIKA_SERVER_URL=http://govchat-tika:9998
+      # LiteLLM als OpenAI-compatibele modelrouter
+      - OPENAI_API_BASE=http://govchat-litellm:4000
+      - OPENAI_API_KEY=${LITELLM_MASTER_KEY}
+      # Authenticatie via Microsoft Entra ID
+      - ENABLE_SIGNUP=false
+      - ENABLE_LOGIN_FORM=false
+      - ENABLE_OAUTH_SIGNUP=true
+      - OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
+      - AUTH_PROVIDER=azure
+      - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID}
+      - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET}
+      - MICROSOFT_CLIENT_TENANT_ID=${MICROSOFT_CLIENT_TENANT_ID}
+      - OAUTH_SCOPES=openid email profile groups
+      - ENABLE_OAUTH_GROUP_MANAGEMENT=true
+      - OAUTH_GROUP_CLAIM=groups
+      - ENABLE_OAUTH_GROUP_CREATION=true
+      - ENABLE_FORWARD_USER_INFO_HEADERS=true
+      - MICROSOFT_REDIRECT_URI=https://${WEBUI_DOMAIN}/oauth/microsoft/callback
+      # Algemeen
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      - WEBUI_URL=https://${WEBUI_DOMAIN}
+      - CORS_ALLOW_ORIGIN=https://${WEBUI_DOMAIN}
+      - DEFAULT_LOCALE=nl-NL
+      - WEBUI_NAME=${WEBUI_NAME:-GovChat-NL}
+      - EMPTY_CHAT_WELCOME_MESSAGE=${WEBUI_WELCOME_MESSAGE:-Welkom bij GovChat-NL}
+      - LOGIN_SCREEN_SUBTITLE=${WEBUI_LOGIN_SUBTITLE:-Jouw AI assistent}
+      - GLOBAL_LOG_LEVEL=WARNING
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    networks:
+      - govchat-net
+
+volumes:
+  govchat_postgres_data:
+  govchat_qdrant_data:
+  govchat_litellm_postgres_data:
+  govchat_openwebui_data:
+
+networks:
+  govchat-net:
+    driver: bridge
