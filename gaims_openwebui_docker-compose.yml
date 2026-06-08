@@ -135,7 +135,7 @@ services:
       - openwebui-net
 
   govchat-admin:
-    image: ghcr.io/marjoleinverp/open-webui-govchat-overlay-admin:latest
+    image: ghcr.io/govchat-nl/govchat-adminoverlay-admin:latest
     container_name: govchat-admin
     ports:
       - "3002:3002"
