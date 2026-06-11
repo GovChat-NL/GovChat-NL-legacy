@@ -1,0 +1,55 @@
+version: '3.8'
+
+x-shared: &shared
+  restart: always
+  image: docker.n8n.io/n8nio/n8n:latest
+  environment:
+    - DB_TYPE=postgresdb
+    - DB_POSTGRESDB_HOST=postgres_n8n
+    - DB_POSTGRESDB_PORT=5432
+    - DB_POSTGRESDB_DATABASE=postgres
+    - DB_POSTGRESDB_USER=postgres
+    - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+    - EXECUTIONS_MODE=queue
+    - QUEUE_BULL_REDIS_HOST=redis_n8n
+    - QUEUE_BULL_REDIS_PORT=6379
+    - QUEUE_HEALTH_CHECK_ACTIVE=true
+    - N8N_ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    - WEBHOOK_URL=${WEBHOOK_URL}
+    - GENERIC_TIMEZONE=${TZ}
+    - TZ=${TZ}
+    - NODE_ENV=production
+    - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+    - N8N_REINSTALL_MISSING_PACKAGES=true
+    - EXECUTIONS_DATA_MAX_AGE=${DATA_MAX_AGE}
+    - EXECUTIONS_DATA_PRUNE_MAX_COUNT=${DATA_MAX_COUNT}
+    - NODE_FUNCTION_ALLOW_BUILTIN=*
+    - NODE_FUNCTION_ALLOW_EXTERNAL=*
+    - N8N_BLOCK_ENV_ACCESS_IN_NODE=true
+    - N8N_RUNNERS_ENABLED=true
+  volumes:
+    - n8n_data:/home/node/.n8n
+  networks:
+    - n8n_network
+
+services:
+  n8n-main:
+    <<: *shared
+    ports:
+      - 5678:5678
+
+  n8n-worker:
+    <<: *shared
+    command: worker
+    deploy:
+      mode: replicated
+      replicas: 5
+    depends_on:
+      - n8n-main
+
+volumes:
+  n8n_data:
+
+networks:
+  n8n_network:
+    external: true
